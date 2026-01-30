@@ -1,204 +1,164 @@
-# Portrait TSP Art (Edge-Aware Sampling + Degree-2 Optimization + Tour Heuristics)
+# Portrait TSP Art
 
-This project converts a portrait image into **single-stroke line art** by:
-1) sampling thousands of points from the image **with carefully designed pixel-level weights**,  
-2) building a **degree-2 minimum-length graph** (a multi-cycle “2-factor” structure) via Gurobi,  
-3) merging cycles using a **geometry-driven heuristic**, and  
-4) refining the final route using **2-opt** local search, then rendering the tour as a continuous polyline.
+**Single-stroke portrait drawing via edge-aware sampling and TSP heuristics**
 
----
-
-## Table of Contents
-- [Overview](#overview)
-- [Pipeline](#pipeline)
-  - [1) Weighted Point Sampling from the Portrait](#1-weighted-point-sampling-from-the-portrait)
-  - [2) Degree-2 Optimization Model (2-Factor) with Gurobi](#2-degree2-optimization-model-2factor-with-gurobi)
-  - [3) Cycle Extraction and Geometric Merging](#3-cycle-extraction-and-geometric-merging)
-  - [4) 2-opt Tour Improvement](#4-2opt-tour-improvement)
-  - [5) Rendering / Export](#5-rendering--export)
-- [Key Design Choices (Why This Works)](#key-design-choices-why-this-works)
-- [Parameters You Can Tune](#parameters-you-can-tune)
-- [Complexity & Practical Notes](#complexity--practical-notes)
-- [Reproducibility](#reproducibility)
-- [Requirements](#requirements)
+This project transforms a portrait image into a **single continuous line drawing** by combining image-based importance sampling with large-scale graph optimization and geometric heuristics.  
+The final output is a single polyline that visually reconstructs the portrait structure.
 
 ---
 
-## Overview
-The core idea is to **allocate points where visual structure is dense** (edges, hair, facial features, local shadows) and suppress points in low-information regions (e.g., uniform background).  
-A tour is then constructed so that connecting these points produces a line drawing that visually resembles the portrait.
+## ✨ Final Result
+
+<p align="center">
+  <img src="assets/final_tsp_art.png" width="520">
+</p>
+
+> A single closed polyline generated from approximately 8,000 sampled points.
 
 ---
 
-## Pipeline
+## 🧠 Method Overview
 
-### 1) Weighted Point Sampling from the Portrait
-**Goal:** Sample `N` points so that the point cloud concentrates on meaningful structures (contours, hair strands, facial details), rather than wasting samples on flat background.
+The pipeline consists of five major stages:
 
-**Steps & Methods**
+1. Edge- and region-aware point sampling  
+2. Degree-2 minimum-length graph optimization  
+3. Geometric merging of disjoint cycles  
+4. Local tour refinement with 2-opt  
+5. High-resolution single-stroke rendering  
 
-1. **Image preprocessing**
-   - Resize the input image to a fixed width (aspect ratio preserved) using a high-quality interpolation method.
-   - Convert to grayscale for stable edge/contrast computations.
-
-2. **Edge-aware weighting (structure emphasis)**
-   - Compute **Sobel gradients** in x/y and combine them into a gradient magnitude map.
-     - **What it captures:** strong boundaries and contours (face outline, edges of features).
-   - Compute **Laplacian response magnitude**.
-     - **What it captures:** high-frequency details and sharp intensity changes (fine textures, hair detail).
-   - Normalize both maps to comparable scales and form a weighted combination.
-     - **Problem solved:** avoids one detector dominating due to scale differences; uses Sobel for robust contours and Laplacian for fine detail.
-
-3. **Local darkness / shadow detail weighting (contrast emphasis)**
-   - Convert grayscale to a “darkness map” (darker pixels → larger values).
-   - Apply a **large-kernel Gaussian blur** to obtain a local baseline (low-frequency background illumination).
-   - Subtract blurred darkness from raw darkness and clamp to keep only positive residuals.
-     - **What it captures:** pixels that are **locally darker than their neighborhood** (shadow edges, local texture).
-     - **Problem solved:** preserves important tonal structure beyond pure edges (e.g., shading on face/hair).
-
-4. **Region boosting using face detection (semantic emphasis)**
-   - Detect the primary face using a **Haar cascade frontal-face detector**.
-   - If a face is found, construct three region masks:
-     - **Face ellipse mask:** boosts the overall face region.
-     - **Facial-feature Gaussian mask:** smoothly boosts central feature area (eyes/nose/mouth region) without hard boundaries.
-     - **Hair rectangle mask:** strongly boosts the hair region above and around the face bounding box.
-   - Combine these masks into a single **multiplicative region boost**.
-     - **Problem solved:** concentrates sampling on the subject (especially hair and features), producing a clearer portrait-like stroke outcome.
-
-5. **Background suppression (color-based heuristic)**
-   - Use simple RGB/BGR thresholding to identify a “blue-ish” background region (common in portrait photos).
-   - Down-weight these pixels substantially.
-     - **Problem solved:** prevents sample waste in flat background; reduces noisy strokes.
-
-6. **Final probability distribution and sampling**
-   - Aggregate weights: **edges + local darkness**, then multiply by **region boost**, then apply **background suppression**.
-   - Add a small epsilon for numerical stability and normalize to a probability distribution over all pixels.
-   - Sample `N` pixels using the normalized probabilities (**importance sampling**).
-   - Convert sampled pixel coordinates to normalized `[0,1]×[0,1]` coordinates (with y-axis flipped for plotting consistency).
-
-**Output:** A set of normalized 2D points representing the portrait’s most informative structures.
+Each stage is designed to preserve visual structure while remaining computationally tractable at scale.
 
 ---
 
-### 2) Degree-2 Optimization Model (2-Factor) with Gurobi
-**Goal:** Connect points with minimal total length while ensuring each point has exactly two incident edges, forming one or more cycles.
+## 1. Edge- and Region-Aware Point Sampling
 
-**Model Structure**
-- Define binary decision variables for undirected edges between point pairs.
-- Objective: minimize the sum of selected edge lengths (Euclidean distances).
-- Constraint: for every node, the number of incident selected edges must equal **2**.
+Points are sampled **non-uniformly** from the image, with higher probability assigned to visually informative regions.  
+Instead of uniform sampling, a pixel-level probability distribution is constructed to reflect both structural and semantic importance.
 
-**What this produces**
-- A **2-regular graph**: every node has degree 2, which decomposes into **multiple disjoint cycles** (a “2-factor”).
-- This is intentionally *not* a full TSP with subtour elimination.
-  - **Problem solved:** the full TSP formulation is significantly harder at large scale; the degree-2 model is a structured relaxation that can be solved more reliably under time limits, then repaired/merged with heuristics.
+### Structural importance
+The sampling distribution emphasizes:
+- strong image contours and boundaries,
+- fine-scale details such as hair strands,
+- local contrast and shading variations.
 
----
+These signals ensure that sampled points align with edges, textures, and tonal transitions that define the portrait.
 
-### 3) Cycle Extraction and Geometric Merging
-**Goal:** Convert multiple disjoint cycles into a single long tour order suitable for continuous drawing.
+### Semantic region emphasis
+To improve recognizability, semantically important regions are explicitly boosted:
+- the detected face region,
+- central facial features,
+- the hair region above and around the face.
 
-**Cycle extraction**
-- Build adjacency lists from chosen edges (each node should have 2 neighbors).
-- Traverse unvisited nodes to recover each cycle as an ordered list.
+This prevents sampling from being wasted on low-information background areas.
 
-**Geometric merging heuristic**
-- For each pair of cycles, compute the closest pair of nodes between them (minimum Euclidean distance).
-- Pick the two closest cycles and merge them by:
-  - rotating each cycle so the chosen “closest node” becomes the merge anchor,
-  - considering multiple orientation combinations (keeping/reversing direction of each cycle),
-  - selecting the merged ordering that yields the shortest resulting open-path length.
+### Background suppression
+Flat background regions (e.g. uniform blue portrait backgrounds) are down-weighted using simple color heuristics, further concentrating samples on the subject.
 
-**Why this works**
-- The nearest inter-cycle connection is a strong geometric signal for minimal added length.
-- Testing directions prevents accidental long detours caused by inconsistent cycle orientations.
+### Sampling visualization
 
-**Output:** A single “big tour” (node ordering) containing all points.
+<p align="center">
+  <img src="assets/sampling_visualization.png" width="420">
+</p>
+
+> Red points indicate where samples concentrate after weighting and normalization.
 
 ---
 
-### 4) 2-opt Tour Improvement
-**Goal:** Remove crossings and shorten the route with a classic local search method.
+## 2. Degree-2 Graph Optimization (2-Factor Model)
 
-**2-opt move**
-- Randomly select two non-adjacent edges `(a–b)` and `(c–d)`.
-- Replace them with `(a–c)` and `(b–d)` if this reduces total length.
-- Apply by reversing the tour segment between the selected indices.
+After sampling, the points are connected by solving a **degree-2 minimum-length graph problem**.
 
-**Stopping logic**
-- Iterate up to a maximum number of iterations.
-- Use a “patience” threshold: stop early after many consecutive non-improving trials.
+The optimization enforces:
+- each point has exactly two incident edges,
+- the total Euclidean edge length is minimized.
 
-**Problem solved**
-- The merged tour may contain crossings and local inefficiencies.
-- 2-opt tends to “straighten” the route, improving visual coherence and reducing unnecessary zig-zags.
+This formulation produces a **2-regular graph**, which naturally decomposes into multiple disjoint cycles.
 
----
-
-### 5) Rendering / Export
-**Goal:** Render a clean line drawing from the final tour.
-
-- Close the tour by returning to the start point.
-- Plot as a single thin black polyline.
-- Hide axes and enforce equal aspect ratio.
-- Export to a high DPI image to preserve fine strokes.
+### Why a degree-2 model?
+- Enforcing only degree constraints avoids expensive subtour elimination.
+- The resulting cycles provide a strong global geometric structure.
+- This formulation scales more reliably to thousands of points than a full exact TSP model.
 
 ---
 
-## Key Design Choices (Why This Works)
-- **Multi-signal sampling** (edges + local darkness): captures both sharp contours and shading-driven structure.
-- **Semantic region boosts** (face/features/hair): prevents the algorithm from “wasting” points on irrelevant background and improves portrait recognizability.
-- **Degree-2 optimization (2-factor)**: provides a strong global structure under a time limit without the full complexity of exact TSP subtour constraints.
-- **Geometric cycle merging**: transforms multiple cycles into one continuous path using nearest-neighbor geometry and orientation checks.
-- **2-opt**: removes crossings and improves local geometry, which is crucial for aesthetic line quality.
+## 3. Geometric Cycle Merging
+
+Because the degree-2 optimization yields multiple disjoint cycles, they must be merged into a single tour.
+
+Cycles are merged iteratively using a geometric heuristic:
+- identify the closest pair of points between two cycles,
+- align the cycles at these points,
+- test multiple orientation combinations,
+- select the merge that yields the shortest resulting path.
+
+This process is repeated until only **one global tour** remains.
+
+The geometric criterion ensures that merges introduce minimal distortion and preserve local continuity.
 
 ---
 
-## Parameters You Can Tune
-### Sampling / Image
-- `num_points`: more points → richer detail but much heavier optimization.
-- `resize_width`: controls pixel grid size for weight computation.
-- Edge weights: relative importance of Sobel vs Laplacian combination.
-- Local-darkness kernel size (Gaussian blur): larger kernel emphasizes broader local contrast.
-- Region boost coefficients:
-  - face ellipse contribution
-  - feature Gaussian strength
-  - hair mask multiplier (often the most visually impactful)
-- Background suppression thresholds: adjust for different background colors.
+## 4. Local Tour Refinement (2-opt)
 
-### Optimization
-- `time_limit`: solver time budget.
-- `verbose`: toggle solver logs.
+The merged tour may still contain crossings or inefficient detours.  
+To refine the path, a **2-opt local search** procedure is applied.
 
-### Heuristics
-- Cycle merge strategy: nearest-cycle pair selection and orientation options.
-- `two_opt`: `max_iter`, `patience` to trade runtime for improvement.
+This step:
+- removes self-intersections,
+- shortens unnecessary zig-zags,
+- improves overall smoothness and visual coherence.
 
-### Rendering
-- `lw` (line width): thin lines for stroke style; thicker lines for bold style.
-- `dpi`: high DPI for crisp output.
+2-opt is particularly effective for improving aesthetic quality in large-scale drawing paths.
 
 ---
 
-## Complexity & Practical Notes
-- Pairwise distance computation and full edge variable creation scale as **O(n²)**.
-  - Large `num_points` can become computationally and memory intensive.
-- The degree-2 model is a relaxation: it may return multiple cycles, which are merged heuristically afterward.
-- If face detection fails, the pipeline still works using edge + local darkness signals, but recognizability may drop depending on background complexity.
+## 5. Single-Stroke Rendering
+
+The final tour is rendered as a **single continuous polyline**:
+- the path is closed to form one loop,
+- axes and annotations are removed,
+- equal aspect ratio is enforced,
+- high DPI is used to preserve fine stroke detail.
+
+The result resembles a hand-drawn, single-stroke portrait.
 
 ---
 
-## Reproducibility
-- Random seeds are set for both Python `random` and NumPy, ensuring consistent sampling and 2-opt behavior across runs (given the same environment and solver behavior).
+## 🔧 Key Design Choices
+
+- Importance sampling instead of uniform pixel sampling
+- Combination of edge, contrast, and semantic signals
+- Degree-2 optimization as a scalable relaxation of TSP
+- Geometric merging instead of exact subtour constraints
+- Local refinement via 2-opt for visual quality
 
 ---
 
-## Requirements
-- Python 3.x
-- `numpy`
-- `opencv-python`
-- `matplotlib`
-- `gurobipy` (requires a working Gurobi installation and license)
+## ⚙️ Tunable Parameters
 
-(Optional cleanup)
-- `PIL` and `time` are not required unless you extend the project; they can be removed from imports if unused.
+Key parameters that affect the result include:
+- number of sampled points (detail vs. runtime),
+- relative emphasis on edges vs. shading,
+- strength of face and hair region boosting,
+- solver time limit,
+- local refinement budget.
+
+Adjusting these allows control over both artistic style and computational cost.
+
+---
+
+## 📈 Complexity & Practical Notes
+
+- Pairwise distance computations scale quadratically with the number of points.
+- Very large point sets may exceed memory or solver limits.
+- If face detection fails, the pipeline still functions using structural signals only, though recognizability may decrease.
+
+---
+
+## 🚀 Requirements
+
+- Python 3.x  
+- NumPy  
+- OpenCV  
+- Matplotlib  
+- Gurobi (license required)
