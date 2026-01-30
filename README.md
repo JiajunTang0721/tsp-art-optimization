@@ -168,21 +168,13 @@ Adjusting these allows control over both artistic style and computational cost.
 ## 📁 Repository Structure
 
 ```text
-integrated-bitcoin-risk-modeling/
+tsp-art-optimization/
 │
-├─ paper/
-│  ├─ main.tex            # LaTeX source
-│  ├─ main.pdf            # Compiled paper (downloadable)
-│  └─ figures/            # Figures used in the paper
+├─ assets/
+│  ├─ final_tsp_art.png          # Final single-stroke TSP artwork
+│  └─ sampling_visualization.png # Visualization of weighted point sampling
 │
-├─ src/
-│  ├─ section3_ewma.py    # EWMA volatility modeling
-│  ├─ section4_var.py     # Parametric & historical VaR
-│  ├─ section5_es.py      # Expected Shortfall
-│  └─ section6_backtest.py# Kupiec VaR backtesting
+├─ main.py                       # Main pipeline: sampling, optimization, merging, rendering
 │
-├─ data/
-│  └─ bitcoin.xlsx        # BTC/USD daily price data
-│
-└─ README.md
+└─ README.md                     # Project documentation daily price data
 
