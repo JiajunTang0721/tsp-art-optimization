@@ -162,3 +162,27 @@ Adjusting these allows control over both artistic style and computational cost.
 - OpenCV  
 - Matplotlib  
 - Gurobi (license required)
+
+---
+
+## 📁 Repository Structure
+
+```text
+integrated-bitcoin-risk-modeling/
+│
+├─ paper/
+│  ├─ main.tex            # LaTeX source
+│  ├─ main.pdf            # Compiled paper (downloadable)
+│  └─ figures/            # Figures used in the paper
+│
+├─ src/
+│  ├─ section3_ewma.py    # EWMA volatility modeling
+│  ├─ section4_var.py     # Parametric & historical VaR
+│  ├─ section5_es.py      # Expected Shortfall
+│  └─ section6_backtest.py# Kupiec VaR backtesting
+│
+├─ data/
+│  └─ bitcoin.xlsx        # BTC/USD daily price data
+│
+└─ README.md
+
